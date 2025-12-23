@@ -15,6 +15,7 @@ uniform float u_numChars;
 uniform bool u_colored;
 uniform float u_blend;
 uniform float u_highlight;
+uniform float u_brightness;
 
 // Audio
 uniform float u_audioLevel;
@@ -111,8 +112,22 @@ void main() {
     rippleGlow = min(rippleGlow, 1.0);
   }
   
+  // Apply brightness multiplier
+  // brightness < 1.0: darkens (multiply)
+  // brightness > 1.0: brightens (compress dark values toward 1.0)
+  float adjustedBrightness;
+  if (u_brightness <= 1.0) {
+    adjustedBrightness = brightness * u_brightness;
+  } else {
+    // For brightness > 1.0, compress the range: dark values get pushed up
+    // Formula: 1.0 - (1.0 - brightness) / u_brightness
+    // This makes dark values brighter while keeping bright values near 1.0
+    adjustedBrightness = 1.0 - (1.0 - brightness) / u_brightness;
+  }
+  adjustedBrightness = clamp(adjustedBrightness, 0.0, 1.0);
+  
   // Map brightness to character index (0 = darkest char, numChars-1 = brightest)
-  float charIndex = floor(brightness * (u_numChars - 0.001));
+  float charIndex = floor(adjustedBrightness * (u_numChars - 0.001));
   
   // Find the character in the atlas (horizontal strip of pre-rendered chars)
   float atlasX = charIndex / u_numChars;

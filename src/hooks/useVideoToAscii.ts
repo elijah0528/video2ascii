@@ -27,12 +27,15 @@ export function useVideoToAscii(
   options: UseVideoToAsciiOptions = {}
 ): AsciiContext {
   const {
-    fontSize = 10,
+    fontSize,
+    numColumns,
     colored = false,
     blend = 0,
     highlight = 0,
+    brightness = 1.0,
     charset = DEFAULT_CHARSET,
-    maxWidth = 900,
+    maxWidth,
+    enableSpacebarToggle = false,
     onStats,
   } = options;
 
@@ -64,9 +67,21 @@ export function useVideoToAscii(
   const [isReady, setIsReady] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
 
-  // Calculate grid size based on font size
-  const charWidth = fontSize * CHAR_WIDTH_RATIO;
-  const cols = Math.floor(maxWidth / charWidth);
+  // Calculate fontSize and maxWidth from numColumns if provided
+  // If numColumns is provided, we'll calculate fontSize from container width
+  // For now, use a default width to calculate initial fontSize
+  const defaultWidth = typeof window !== "undefined" ? window.innerWidth : 900;
+  const containerWidth = maxWidth || defaultWidth;
+  const calculatedFontSize = numColumns
+    ? containerWidth / (numColumns * CHAR_WIDTH_RATIO)
+    : fontSize || 10;
+  const calculatedMaxWidth = numColumns
+    ? numColumns * calculatedFontSize * CHAR_WIDTH_RATIO
+    : maxWidth || 900;
+
+  // Calculate grid size - use numColumns directly if provided
+  const charWidth = calculatedFontSize * CHAR_WIDTH_RATIO;
+  const cols = numColumns || Math.floor(calculatedMaxWidth / charWidth);
   // Memoize chars array so it only recalculates when charset changes
   const chars = useMemo(() => getCharArray(charset), [charset]);
 
@@ -99,6 +114,7 @@ export function useVideoToAscii(
         u_colored: get("u_colored"),
         u_blend: get("u_blend"),
         u_highlight: get("u_highlight"),
+        u_brightness: get("u_brightness"),
 
         // Mouse uniforms
         u_mouse: get("u_mouse"),
@@ -129,19 +145,30 @@ export function useVideoToAscii(
   const initWebGL = useCallback(() => {
     const canvas = canvasRef.current;
     const video = videoRef.current;
+    const container = containerRef.current;
     if (!canvas || !video || !video.videoWidth) return false;
+
+    // Recalculate fontSize from actual container width if numColumns is provided
+    let finalFontSize = calculatedFontSize;
+    let finalCols = cols;
+    if (numColumns && container) {
+      const actualWidth = container.clientWidth || defaultWidth;
+      finalFontSize = actualWidth / (numColumns * CHAR_WIDTH_RATIO);
+      finalCols = numColumns;
+    }
 
     // Figure out grid dimensions from video aspect ratio
     const grid = calculateGridDimensions(
       video.videoWidth,
       video.videoHeight,
-      cols
+      finalCols
     );
     setDimensions(grid);
 
     // Set canvas size
-    const pixelWidth = grid.cols * charWidth;
-    const pixelHeight = grid.rows * fontSize;
+    const finalCharWidth = finalFontSize * CHAR_WIDTH_RATIO;
+    const pixelWidth = grid.cols * finalCharWidth;
+    const pixelHeight = grid.rows * finalFontSize;
     canvas.width = pixelWidth;
     canvas.height = pixelHeight;
 
@@ -176,7 +203,16 @@ export function useVideoToAscii(
 
     // Create textures for video frame and ASCII character atlas
     videoTextureRef.current = createVideoTexture(gl);
-    atlasTextureRef.current = createAsciiAtlas(gl, chars, fontSize);
+    const finalFontSizeForAtlas =
+      numColumns && container
+        ? (container.clientWidth || defaultWidth) /
+          (numColumns * CHAR_WIDTH_RATIO)
+        : calculatedFontSize;
+    atlasTextureRef.current = createAsciiAtlas(
+      gl,
+      chars,
+      finalFontSizeForAtlas
+    );
 
     // Cache all uniform locations for fast access during render
     const locations = cacheUniformLocations(gl, program);
@@ -188,9 +224,10 @@ export function useVideoToAscii(
 
     // Set static uniforms that don't change during playback
     gl.uniform2f(locations.u_resolution, pixelWidth, pixelHeight);
-    gl.uniform2f(locations.u_charSize, charWidth, fontSize);
-    gl.uniform2f(locations.u_gridSize, cols, grid.rows);
+    gl.uniform2f(locations.u_charSize, finalCharWidth, finalFontSize);
+    gl.uniform2f(locations.u_gridSize, finalCols, grid.rows);
     gl.uniform1f(locations.u_numChars, chars.length);
+    gl.uniform1f(locations.u_brightness, brightness);
 
     // Initialize feature uniforms to disabled state
     gl.uniform2f(locations.u_mouse, -1, -1);
@@ -205,7 +242,15 @@ export function useVideoToAscii(
 
     setIsReady(true);
     return true;
-  }, [cols, charWidth, fontSize, chars, cacheUniformLocations]);
+  }, [
+    cols,
+    numColumns,
+    calculatedFontSize,
+    chars,
+    cacheUniformLocations,
+    brightness,
+    defaultWidth,
+  ]);
 
   // Render loop - runs every frame while video is playing
   const render = useCallback(() => {
@@ -234,6 +279,7 @@ export function useVideoToAscii(
     gl.uniform1i(locations.u_colored, colored ? 1 : 0);
     gl.uniform1f(locations.u_blend, blend / 100);
     gl.uniform1f(locations.u_highlight, highlight / 100);
+    gl.uniform1f(locations.u_brightness, brightness);
 
     // Let feature hooks update their uniforms
     for (const setter of uniformSettersRef.current.values()) {
@@ -264,7 +310,7 @@ export function useVideoToAscii(
 
     // Schedule next frame
     animationRef.current = requestAnimationFrame(render);
-  }, [colored, blend, highlight, onStats]);
+  }, [colored, blend, highlight, brightness, onStats]);
 
   // Video Event Handlers
   useEffect(() => {
@@ -309,12 +355,31 @@ export function useVideoToAscii(
     };
   }, [initWebGL, render]);
 
-  // Reinitialize when config changes
+  // Reinitialize when config changes (numColumns, brightness, etc.)
   useEffect(() => {
     if (videoRef.current && videoRef.current.readyState >= 1) {
       initWebGL();
     }
   }, [initWebGL]);
+
+  // Handle container resize when numColumns is used
+  useEffect(() => {
+    if (!numColumns || !containerRef.current) return;
+
+    const container = containerRef.current;
+    const resizeObserver = new ResizeObserver(() => {
+      // Reinitialize WebGL when container size changes
+      if (videoRef.current && videoRef.current.readyState >= 1) {
+        initWebGL();
+      }
+    });
+
+    resizeObserver.observe(container);
+
+    return () => {
+      resizeObserver.disconnect();
+    };
+  }, [numColumns, initWebGL]);
 
   // Cleanup WebGL resources when unmounting
   useEffect(() => {
@@ -350,6 +415,8 @@ export function useVideoToAscii(
 
   // Spacebar to toggle play/pause
   useEffect(() => {
+    if (!enableSpacebarToggle) return;
+
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.code === "Space" && e.target === document.body) {
         e.preventDefault();
@@ -358,7 +425,7 @@ export function useVideoToAscii(
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [toggle]);
+  }, [toggle, enableSpacebarToggle]);
 
   return {
     containerRef,

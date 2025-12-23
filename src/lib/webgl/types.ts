@@ -33,6 +33,7 @@ export interface UniformLocations {
   u_colored: WebGLUniformLocation | null;
   u_blend: WebGLUniformLocation | null;
   u_highlight: WebGLUniformLocation | null;
+  u_brightness: WebGLUniformLocation | null;
 
   // Mouse
   u_mouse: WebGLUniformLocation | null;
@@ -58,8 +59,11 @@ export interface UseVideoToAsciiOptions {
   colored?: boolean;
   blend?: number;
   highlight?: number;
+  brightness?: number;
   charset?: CharsetKey;
   maxWidth?: number;
+  numColumns?: number;
+  enableSpacebarToggle?: boolean;
   onStats?: (stats: AsciiStats) => void;
 }
 
@@ -109,8 +113,18 @@ export interface RippleHandlers {
 }
 
 // Component Props - extends core options with feature-specific props
-export interface VideoToAsciiProps extends UseVideoToAsciiOptions {
+export interface VideoToAsciiProps {
   src: string;
+
+  // Size control
+  numColumns?: number;
+
+  // Rendering
+  colored?: boolean;
+  blend?: number;
+  highlight?: number;
+  brightness?: number;
+  charset?: CharsetKey;
 
   // Mouse effect
   enableMouse?: boolean;
@@ -121,8 +135,13 @@ export interface VideoToAsciiProps extends UseVideoToAsciiOptions {
   rippleSpeed?: number;
 
   // Audio
-  audioReactivity?: number;
-  audioSensitivity?: number;
+  audioEffect?: number;
+  audioRange?: number;
+
+  // Controls
+  isPlaying?: boolean;
+  autoPlay?: boolean;
+  enableSpacebarToggle?: boolean;
 
   showStats?: boolean;
   className?: string;

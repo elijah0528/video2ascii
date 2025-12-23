@@ -1,51 +1,49 @@
 "use client";
 
+import { useEffect } from "react";
 import { useVideoToAscii } from "@/hooks/useVideoToAscii";
 import { useAsciiMouseEffect } from "@/hooks/useAsciiMouseEffect";
 import { useAsciiRipple } from "@/hooks/useAsciiRipple";
 import { useAsciiAudio } from "@/hooks/useAsciiAudio";
-import { CHAR_WIDTH_RATIO, type VideoToAsciiProps } from "@/lib/webgl";
+import { type VideoToAsciiProps } from "@/lib/webgl";
 
 export type { VideoToAsciiProps };
 
 // Component Implementation
-export function VideoToAscii({
+export function Video2Ascii({
   src,
-  fontSize = 10,
-  colored = false,
+  numColumns,
+  colored = true,
   blend = 0,
   highlight = 0,
+  brightness = 1.0,
   charset = "standard",
-  maxWidth = 900,
   enableMouse = true,
   trailLength = 24,
   enableRipple = false,
   rippleSpeed = 40,
-  audioReactivity = 0,
-  audioSensitivity = 50,
+  audioEffect = 0,
+  audioRange = 50,
+  isPlaying = true,
+  autoPlay = true,
+  enableSpacebarToggle = false,
   showStats = false,
   className = "",
 }: VideoToAsciiProps) {
   // Core hook handles WebGL setup and rendering
   const ascii = useVideoToAscii({
-    fontSize,
+    numColumns,
     colored,
     blend,
     highlight,
+    brightness,
     charset,
-    maxWidth,
+    enableSpacebarToggle,
   });
 
   // Destructure to avoid linter issues with accessing refs
-  const {
-    containerRef,
-    videoRef,
-    canvasRef,
-    stats,
-    dimensions,
-    isReady,
-    isPlaying,
-  } = ascii;
+  const { containerRef, videoRef, canvasRef, stats, dimensions, isReady } =
+    ascii;
 
   // Feature hooks - always call them (React rules), enable/disable via options
   const mouseHandlers = useAsciiMouseEffect(ascii, {
@@ -59,15 +57,26 @@ export function VideoToAscii({
   });
 
   useAsciiAudio(ascii, {
-    enabled: audioReactivity > 0,
-    reactivity: audioReactivity,
-    sensitivity: audioSensitivity,
+    enabled: audioEffect > 0,
+    reactivity: audioEffect,
+    sensitivity: audioRange,
   });
 
-  // Calculate canvas size in pixels
-  const charWidth = fontSize * CHAR_WIDTH_RATIO;
-  const pixelWidth = dimensions.cols * charWidth;
-  const pixelHeight = dimensions.rows * fontSize;
+  // Control video playback based on isPlaying prop
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    if (isPlaying) {
+      if (autoPlay && isReady) {
+        video.play().catch(() => {
+          // Auto-play may be blocked by browser, that's ok
+        });
+      }
+    } else {
+      video.pause();
+    }
+  }, [isPlaying, autoPlay, isReady, videoRef]);
 
   return (
     <div className={`video-to-ascii ${className}`}>
@@ -75,7 +84,7 @@ export function VideoToAscii({
       <video
         ref={videoRef}
         src={src}
-        muted={audioReactivity === 0}
+        muted={audioEffect === 0}
         loop
         playsInline
         crossOrigin="anonymous"
@@ -85,12 +94,7 @@ export function VideoToAscii({
       {/* Interactive container */}
       <div
         ref={containerRef}
-        className="relative cursor-pointer select-none overflow-hidden rounded"
-        style={{
-          width: pixelWidth || "100%",
-          height: pixelHeight || "auto",
-          backgroundColor: "#000",
-        }}
+        className="relative cursor-pointer select-none overflow-hidden rounded bg-black"
         {...(enableMouse ? mouseHandlers : {})}
         {...(enableRipple ? rippleHandlers : {})}
       >
@@ -111,16 +115,9 @@ export function VideoToAscii({
             ×{dimensions.rows}
           </div>
         )}
-
-        {/* Play indicator */}
-        {!isPlaying && isReady && (
-          <div className="absolute inset-0 flex items-center justify-center bg-black/50">
-            <div className="text-white text-lg">▶ Press Space to Play</div>
-          </div>
-        )}
       </div>
     </div>
   );
 }
 
-export default VideoToAscii;
+export default Video2Ascii;
