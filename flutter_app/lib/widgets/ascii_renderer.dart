@@ -1,11 +1,15 @@
+import 'dart:async';
 import 'dart:math';
+import 'dart:typed_data';
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:video_player/video_player.dart';
 import '../core/ascii_charsets.dart';
 import '../core/ripple_effect.dart';
 import '../providers/video_provider.dart';
 
-/// Widget that renders video as ASCII art
+/// Widget that renders video as ASCII art with real frame capture
 class AsciiRenderer extends StatefulWidget {
   final VideoProvider provider;
 
@@ -18,8 +22,15 @@ class AsciiRenderer extends StatefulWidget {
   State<AsciiRenderer> createState() => _AsciiRendererState();
 }
 
-class _AsciiRendererState extends State<AsciiRenderer> with SingleTickerProviderStateMixin {
+class _AsciiRendererState extends State<AsciiRenderer>
+    with SingleTickerProviderStateMixin {
+  final GlobalKey _videoKey = GlobalKey();
   late AnimationController _animationController;
+  Timer? _captureTimer;
+  Uint8List? _framePixels;
+  int _frameWidth = 0;
+  int _frameHeight = 0;
+  bool _isCapturing = false;
 
   @override
   void initState() {
@@ -28,12 +39,53 @@ class _AsciiRendererState extends State<AsciiRenderer> with SingleTickerProvider
       vsync: this,
       duration: const Duration(seconds: 1),
     )..repeat();
+
+    // Start frame capture timer at ~20fps for performance
+    _captureTimer = Timer.periodic(const Duration(milliseconds: 50), (_) {
+      _captureFrame();
+    });
   }
 
   @override
   void dispose() {
+    _captureTimer?.cancel();
     _animationController.dispose();
     super.dispose();
+  }
+
+  Future<void> _captureFrame() async {
+    if (_isCapturing) return;
+    if (!widget.provider.hasVideo) return;
+    if (!widget.provider.isPlaying && _framePixels != null) return;
+
+    final boundary = _videoKey.currentContext?.findRenderObject();
+    if (boundary == null || boundary is! RenderRepaintBoundary) return;
+
+    try {
+      _isCapturing = true;
+
+      // Capture at a lower resolution for performance
+      const double pixelRatio = 0.5;
+      final ui.Image image = await boundary.toImage(pixelRatio: pixelRatio);
+
+      final ByteData? byteData = await image.toByteData(
+        format: ui.ImageByteFormat.rawRgba,
+      );
+
+      if (byteData != null && mounted) {
+        setState(() {
+          _framePixels = byteData.buffer.asUint8List();
+          _frameWidth = image.width;
+          _frameHeight = image.height;
+        });
+      }
+
+      image.dispose();
+    } catch (e) {
+      // Silently handle capture errors
+    } finally {
+      _isCapturing = false;
+    }
   }
 
   @override
@@ -61,12 +113,21 @@ class _AsciiRendererState extends State<AsciiRenderer> with SingleTickerProvider
               return Stack(
                 fit: StackFit.expand,
                 children: [
-                  // Original video (shown behind if blend > 0)
-                  if (widget.provider.blend > 0 || widget.provider.showOriginalVideo)
+                  // Hidden video for frame capture (wrapped in RepaintBoundary)
+                  Positioned.fill(
+                    child: Opacity(
+                      opacity: widget.provider.showOriginalVideo ? 1.0 : 0.0,
+                      child: RepaintBoundary(
+                        key: _videoKey,
+                        child: VideoPlayer(widget.provider.controller!),
+                      ),
+                    ),
+                  ),
+
+                  // Original video visible (if blend > 0)
+                  if (widget.provider.blend > 0 && !widget.provider.showOriginalVideo)
                     Opacity(
-                      opacity: widget.provider.showOriginalVideo
-                          ? 1.0
-                          : widget.provider.blend / 100,
+                      opacity: widget.provider.blend / 100,
                       child: VideoPlayer(widget.provider.controller!),
                     ),
 
@@ -76,7 +137,10 @@ class _AsciiRendererState extends State<AsciiRenderer> with SingleTickerProvider
                       opacity: 1.0 - (widget.provider.blend / 100),
                       child: CustomPaint(
                         painter: AsciiPainter(
-                          controller: widget.provider.controller!,
+                          framePixels: _framePixels,
+                          frameWidth: _frameWidth,
+                          frameHeight: _frameHeight,
+                          videoSize: widget.provider.controller!.value.size,
                           charset: getCharset(widget.provider.charsetKey),
                           numColumns: widget.provider.numColumns,
                           brightness: widget.provider.brightness,
@@ -96,9 +160,12 @@ class _AsciiRendererState extends State<AsciiRenderer> with SingleTickerProvider
   }
 }
 
-/// Custom painter that renders ASCII art from video texture
+/// Custom painter that renders ASCII art from captured video frames
 class AsciiPainter extends CustomPainter {
-  final VideoPlayerController controller;
+  final Uint8List? framePixels;
+  final int frameWidth;
+  final int frameHeight;
+  final Size videoSize;
   final AsciiCharset charset;
   final int numColumns;
   final double brightness;
@@ -106,7 +173,10 @@ class AsciiPainter extends CustomPainter {
   final RippleManager rippleManager;
 
   AsciiPainter({
-    required this.controller,
+    required this.framePixels,
+    required this.frameWidth,
+    required this.frameHeight,
+    required this.videoSize,
     required this.charset,
     required this.numColumns,
     required this.brightness,
@@ -116,48 +186,60 @@ class AsciiPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    if (!controller.value.isInitialized) return;
+    if (videoSize.isEmpty) return;
 
-    final videoSize = controller.value.size;
     final aspectRatio = videoSize.width / videoSize.height;
-
-    // Calculate number of rows based on aspect ratio and character proportions
-    // ASCII chars are ~2x taller than wide
-    final numRows = (numColumns / aspectRatio / 2).round();
+    final numRows = max(1, (numColumns / aspectRatio / 2).round());
 
     final cellWidth = size.width / numColumns;
     final cellHeight = size.height / numRows;
-
-    // Font size to fit cells
     final fontSize = min(cellWidth * 1.8, cellHeight * 0.9);
 
     final charList = charset.charList;
     final numChars = charList.length;
 
-    // Since we can't directly access video pixels in Flutter,
-    // we'll create a synthetic pattern based on position and time
-    // In a production app, you'd use platform channels to get actual frame data
-
-    final time = DateTime.now().millisecondsSinceEpoch / 1000.0;
+    // Check if we have valid frame data
+    final hasFrameData = framePixels != null &&
+        frameWidth > 0 &&
+        frameHeight > 0;
 
     for (int row = 0; row < numRows; row++) {
       for (int col = 0; col < numColumns; col++) {
         final normalizedX = col / numColumns;
         final normalizedY = row / numRows;
 
-        // Create a dynamic pattern (simulating video)
-        // This creates a moving wave pattern as a demonstration
-        double value = 0.5 +
-            0.3 * sin(normalizedX * 10 + time * 2) *
-            cos(normalizedY * 8 + time * 1.5);
+        double value;
+        int r = 0, g = 255, b = 0; // Default green
 
-        // Add some noise for texture
-        value += 0.1 * sin(normalizedX * 50 + normalizedY * 50);
+        if (hasFrameData) {
+          // Sample from actual frame data
+          final sampleX = (normalizedX * frameWidth).round().clamp(0, frameWidth - 1);
+          final sampleY = (normalizedY * frameHeight).round().clamp(0, frameHeight - 1);
+          final pixelIndex = (sampleY * frameWidth + sampleX) * 4;
 
-        // Apply brightness
+          if (pixelIndex + 3 < framePixels!.length) {
+            r = framePixels![pixelIndex];
+            g = framePixels![pixelIndex + 1];
+            b = framePixels![pixelIndex + 2];
+
+            // Calculate brightness using human eye sensitivity weighting
+            value = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0;
+          } else {
+            value = 0.5;
+          }
+        } else {
+          // Fallback: animated pattern while loading
+          final time = DateTime.now().millisecondsSinceEpoch / 1000.0;
+          value = 0.5 +
+              0.3 * sin(normalizedX * 10 + time * 2) *
+                  cos(normalizedY * 8 + time * 1.5);
+          value += 0.1 * sin(normalizedX * 50 + normalizedY * 50);
+        }
+
+        // Apply brightness multiplier
         value = (value * brightness).clamp(0.0, 1.0);
 
-        // Get ripple intensity at this position
+        // Get ripple intensity
         final rippleIntensity = rippleManager.getIntensityAt(normalizedX, normalizedY);
         value = (value + rippleIntensity * 0.5).clamp(0.0, 1.0);
 
@@ -167,8 +249,17 @@ class AsciiPainter extends CustomPainter {
 
         // Determine color
         Color textColor;
-        if (colored) {
-          // Create a color gradient based on position
+        if (colored && hasFrameData) {
+          // Use actual video color
+          textColor = Color.fromRGBO(r, g, b, 1.0);
+          // Boost saturation slightly for visibility
+          final hsv = HSVColor.fromColor(textColor);
+          textColor = hsv.withSaturation((hsv.saturation * 1.3).clamp(0.0, 1.0))
+              .withValue((hsv.value * 1.2).clamp(0.0, 1.0))
+              .toColor();
+        } else if (colored) {
+          // Animated color gradient while loading
+          final time = DateTime.now().millisecondsSinceEpoch / 1000.0;
           final hue = (normalizedX + normalizedY + time * 0.1) % 1.0;
           textColor = HSVColor.fromAHSV(1.0, hue * 360, 0.7, 0.9).toColor();
         } else {
