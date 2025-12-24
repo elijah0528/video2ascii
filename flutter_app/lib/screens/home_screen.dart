@@ -17,6 +17,26 @@ class _HomeScreenState extends State<HomeScreen> {
   final ImagePicker _imagePicker = ImagePicker();
   bool _showControls = true;
 
+  @override
+  void initState() {
+    super.initState();
+    // Auto-load sample video on startup
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _loadSampleVideo();
+    });
+  }
+
+  Future<void> _loadSampleVideo() async {
+    try {
+      await context.read<VideoProvider>().loadAsset('assets/videos/sample.mp4');
+      if (mounted) {
+        context.read<VideoProvider>().play();
+      }
+    } catch (e) {
+      // Sample video not available, user can pick their own
+    }
+  }
+
   Future<void> _pickVideoFromGallery() async {
     try {
       final result = await FilePicker.platform.pickFiles(
