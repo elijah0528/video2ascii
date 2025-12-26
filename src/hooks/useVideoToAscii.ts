@@ -33,15 +33,18 @@ export function useVideoToAscii(
     blend = 0,
     highlight = 0,
     brightness = 1.0,
+    dither = "none",
     charset = DEFAULT_CHARSET,
     maxWidth,
     enableSpacebarToggle = false,
     onStats,
+    mediaType = "video",
   } = options;
 
   // DOM refs
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const imageRef = useRef<HTMLImageElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   // WebGL refs - these hold the GPU resources
@@ -50,6 +53,7 @@ export function useVideoToAscii(
   const videoTextureRef = useRef<WebGLTexture | null>(null);
   const atlasTextureRef = useRef<WebGLTexture | null>(null);
   const animationRef = useRef<number>(0);
+  const needsMipmapUpdateRef = useRef(true);
 
   // Feature hooks register their uniform setters here
   const uniformSettersRef = useRef<Map<string, UniformSetter>>(new Map());
@@ -115,6 +119,7 @@ export function useVideoToAscii(
         u_blend: get("u_blend"),
         u_highlight: get("u_highlight"),
         u_brightness: get("u_brightness"),
+        u_ditherMode: get("u_ditherMode"),
 
         // Mouse uniforms
         u_mouse: get("u_mouse"),
@@ -145,8 +150,30 @@ export function useVideoToAscii(
   const initWebGL = useCallback(() => {
     const canvas = canvasRef.current;
     const video = videoRef.current;
+    const image = imageRef.current;
     const container = containerRef.current;
-    if (!canvas || !video || !video.videoWidth) return false;
+    
+    // Get the media element (video or image)
+    const mediaElement = mediaType === "video" ? video : image;
+    if (!canvas || !mediaElement) return false;
+    
+    // For video, check if loaded; for image, check naturalWidth
+    const isMediaReady = mediaType === "video" 
+      ? (video?.videoWidth ?? 0) > 0
+      : (image?.naturalWidth ?? 0) > 0;
+    
+    if (!isMediaReady) return false;
+    
+    // Get media dimensions
+    const mediaWidth = mediaType === "video" 
+      ? video!.videoWidth 
+      : image!.naturalWidth;
+    const mediaHeight = mediaType === "video" 
+      ? video!.videoHeight 
+      : image!.naturalHeight;
+
+    // Flag that mipmaps need to be regenerated
+    needsMipmapUpdateRef.current = true;
 
     // Recalculate fontSize from actual container width if numColumns is provided
     let finalFontSize = calculatedFontSize;
@@ -157,10 +184,10 @@ export function useVideoToAscii(
       finalCols = numColumns;
     }
 
-    // Figure out grid dimensions from video aspect ratio
+    // Figure out grid dimensions from media aspect ratio
     const grid = calculateGridDimensions(
-      video.videoWidth,
-      video.videoHeight,
+      mediaWidth,
+      mediaHeight,
       finalCols
     );
     setDimensions(grid);
@@ -202,7 +229,18 @@ export function useVideoToAscii(
     createFullscreenQuad(gl, program);
 
     // Create textures for video frame and ASCII character atlas
-    videoTextureRef.current = createVideoTexture(gl);
+    if (!videoTextureRef.current) {
+      videoTextureRef.current = createVideoTexture(gl);
+    }
+    
+    // Allocate storage for the video texture ONCE
+    gl.bindTexture(gl.TEXTURE_2D, videoTextureRef.current);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, mediaWidth, mediaHeight, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
     const finalFontSizeForAtlas =
       numColumns && container
         ? (container.clientWidth || defaultWidth) /
@@ -228,6 +266,10 @@ export function useVideoToAscii(
     gl.uniform2f(locations.u_gridSize, finalCols, grid.rows);
     gl.uniform1f(locations.u_numChars, chars.length);
     gl.uniform1f(locations.u_brightness, brightness);
+    
+    // Set dither mode: 0=none, 1=bayer, 2=random
+    const ditherModeValue = dither === "bayer" ? 1 : dither === "random" ? 2 : 0;
+    gl.uniform1f(locations.u_ditherMode, ditherModeValue);
 
     // Initialize feature uniforms to disabled state
     gl.uniform2f(locations.u_mouse, -1, -1);
@@ -241,35 +283,51 @@ export function useVideoToAscii(
     gl.viewport(0, 0, pixelWidth, pixelHeight);
 
     setIsReady(true);
+    
+    // For images, render immediately since they don't have a play/pause cycle
+    if (mediaType === "image") {
+      renderFrame();
+    }
+    
     return true;
   }, [
-    cols,
     numColumns,
     calculatedFontSize,
     chars,
     cacheUniformLocations,
     brightness,
-    defaultWidth,
+    dither,
+    mediaType,
   ]);
 
-  // Render loop - runs every frame while video is playing
+  // Render loop - runs every frame while video is playing (or once for images)
   const render = useCallback(() => {
     const gl = glRef.current;
     const video = videoRef.current;
+    const image = imageRef.current;
     const program = programRef.current;
     const locations = uniformLocationsRef.current;
 
-    if (!gl || !video || !program || !locations || video.paused || video.ended)
-      return;
+    const mediaElement = mediaType === "video" ? video : image;
+    
+    if (!gl || !mediaElement || !program || !locations) return;
+    
+    // For video, check if playing; images render continuously
+    if (mediaType === "video" && video && (video.paused || video.ended)) return;
 
     const frameStart = performance.now();
 
-    // Upload current video frame to GPU
+    // Upload current frame to GPU (works for both video and image)
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, videoTextureRef.current);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
-    // Generate mipmaps for better quality when sampling large areas
-    gl.generateMipmap(gl.TEXTURE_2D);
+    // Use texSubImage2D for faster texture updates
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, mediaElement);
+    
+    // Generate mipmaps only when needed (e.g., on first load or resize)
+    if (needsMipmapUpdateRef.current) {
+      gl.generateMipmap(gl.TEXTURE_2D);
+      needsMipmapUpdateRef.current = false;
+    }
 
     // Bind the ASCII atlas texture
     gl.activeTexture(gl.TEXTURE1);
@@ -308,78 +366,161 @@ export function useVideoToAscii(
       lastFpsTimeRef.current = now;
     }
 
-    // Schedule next frame
+    // Schedule next frame (for video or if interactive effects are enabled)
     animationRef.current = requestAnimationFrame(render);
-  }, [colored, blend, highlight, brightness, onStats]);
+  }, [colored, blend, highlight, brightness, onStats, mediaType]);
 
-  // Video Event Handlers
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
+  // Single frame render function for images
+  const renderFrame = useCallback(() => {
+    const gl = glRef.current;
+    const image = imageRef.current;
+    const program = programRef.current;
+    const locations = uniformLocationsRef.current;
 
-    const handleLoadedMetadata = () => {
-      initWebGL();
-    };
+    if (!gl || !image || !program || !locations) return;
 
-    const handlePlay = () => {
-      setIsPlaying(true);
-      animationRef.current = requestAnimationFrame(render);
-    };
+    // Upload image to GPU
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, videoTextureRef.current);
+    // Use texSubImage2D for faster texture updates
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, image);
 
-    const handlePause = () => {
-      setIsPlaying(false);
-      cancelAnimationFrame(animationRef.current);
-    };
-
-    const handleEnded = () => {
-      setIsPlaying(false);
-      cancelAnimationFrame(animationRef.current);
-    };
-
-    video.addEventListener("loadedmetadata", handleLoadedMetadata);
-    video.addEventListener("play", handlePlay);
-    video.addEventListener("pause", handlePause);
-    video.addEventListener("ended", handleEnded);
-
-    // If video is already loaded when we mount
-    if (video.readyState >= 1) {
-      handleLoadedMetadata();
+    // Generate mipmaps only when needed
+    if (needsMipmapUpdateRef.current) {
+      gl.generateMipmap(gl.TEXTURE_2D);
+      needsMipmapUpdateRef.current = false;
     }
 
-    return () => {
-      video.removeEventListener("loadedmetadata", handleLoadedMetadata);
-      video.removeEventListener("play", handlePlay);
-      video.removeEventListener("pause", handlePause);
-      video.removeEventListener("ended", handleEnded);
-      cancelAnimationFrame(animationRef.current);
-    };
-  }, [initWebGL, render]);
+    // Bind the ASCII atlas texture
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, atlasTextureRef.current);
+
+    // Update uniforms
+    gl.uniform1i(locations.u_colored, colored ? 1 : 0);
+    gl.uniform1f(locations.u_blend, blend / 100);
+    gl.uniform1f(locations.u_highlight, highlight / 100);
+    gl.uniform1f(locations.u_brightness, brightness);
+
+    // Let feature hooks update their uniforms
+    for (const setter of uniformSettersRef.current.values()) {
+      setter(gl, program, locations);
+    }
+
+    // Draw the quad
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+  }, [colored, blend, highlight, brightness]);
+
+  // Media Event Handlers (video or image)
+  useEffect(() => {
+    if (mediaType === "video") {
+      const video = videoRef.current;
+      if (!video) return;
+
+      const handleLoadedMetadata = () => {
+        initWebGL();
+      };
+
+      const handlePlay = () => {
+        setIsPlaying(true);
+        animationRef.current = requestAnimationFrame(render);
+      };
+
+      const handlePause = () => {
+        setIsPlaying(false);
+        cancelAnimationFrame(animationRef.current);
+      };
+
+      const handleEnded = () => {
+        setIsPlaying(false);
+        cancelAnimationFrame(animationRef.current);
+      };
+
+      video.addEventListener("loadedmetadata", handleLoadedMetadata);
+      video.addEventListener("play", handlePlay);
+      video.addEventListener("pause", handlePause);
+      video.addEventListener("ended", handleEnded);
+
+      // If video is already loaded when we mount
+      if (video.readyState >= 1) {
+        handleLoadedMetadata();
+      }
+
+      return () => {
+        video.removeEventListener("loadedmetadata", handleLoadedMetadata);
+        video.removeEventListener("play", handlePlay);
+        video.removeEventListener("pause", handlePause);
+        video.removeEventListener("ended", handleEnded);
+        cancelAnimationFrame(animationRef.current);
+      };
+    } else {
+      // Image handling
+      const image = imageRef.current;
+      if (!image) return;
+
+      const handleImageLoad = () => {
+        initWebGL();
+        // For images with interactive effects (mouse, ripple), start the render loop
+        if (uniformSettersRef.current.size > 0) {
+          animationRef.current = requestAnimationFrame(render);
+        }
+      };
+
+      image.addEventListener("load", handleImageLoad);
+
+      // If image is already loaded when we mount
+      if (image.complete && image.naturalWidth) {
+        handleImageLoad();
+      }
+
+      return () => {
+        image.removeEventListener("load", handleImageLoad);
+        cancelAnimationFrame(animationRef.current);
+      };
+    }
+  }, [initWebGL, render, mediaType]);
 
   // Reinitialize when config changes (numColumns, brightness, etc.)
   useEffect(() => {
-    if (videoRef.current && videoRef.current.readyState >= 1) {
-      initWebGL();
+    if (mediaType === "video") {
+      if (videoRef.current && videoRef.current.readyState >= 1) {
+        initWebGL();
+      }
+    } else if (mediaType === "image") {
+      if (imageRef.current && imageRef.current.complete) {
+        initWebGL();
+      }
     }
-  }, [initWebGL]);
+  }, [initWebGL, mediaType]);
 
-  // Handle container resize when numColumns is used
+  const resizeObserverRef = useRef<ResizeObserver | null>(null);
+
+  // Handle container resize
   useEffect(() => {
-    if (!numColumns || !containerRef.current) return;
-
     const container = containerRef.current;
+    if (!container) return;
+
+    // Disconnect previous observer if it exists
+    if (resizeObserverRef.current) {
+      resizeObserverRef.current.disconnect();
+    }
+
     const resizeObserver = new ResizeObserver(() => {
       // Reinitialize WebGL when container size changes
-      if (videoRef.current && videoRef.current.readyState >= 1) {
+      if (mediaType === "video" && videoRef.current && videoRef.current.readyState >= 1) {
+        initWebGL();
+      } else if (mediaType === "image" && imageRef.current && imageRef.current.complete) {
         initWebGL();
       }
     });
 
     resizeObserver.observe(container);
+    resizeObserverRef.current = resizeObserver;
 
     return () => {
       resizeObserver.disconnect();
+      resizeObserverRef.current = null;
     };
-  }, [numColumns, initWebGL]);
+  }, [initWebGL]);
 
   // Cleanup WebGL resources when unmounting
   useEffect(() => {
@@ -430,6 +571,7 @@ export function useVideoToAscii(
   return {
     containerRef,
     videoRef,
+    imageRef,
     canvasRef,
     glRef,
     programRef,
@@ -440,6 +582,7 @@ export function useVideoToAscii(
     stats,
     isReady,
     isPlaying,
+    mediaType,
     play,
     pause,
     toggle,

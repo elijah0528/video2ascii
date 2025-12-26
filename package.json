@@ -1,6 +1,6 @@
 {
   "name": "video2ascii",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "WebGL-powered video to ASCII converter for React",
   "author": "Elijah Kurien",
   "license": "MIT",

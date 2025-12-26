@@ -1,22 +1,25 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { useVideoToAscii } from "@/hooks/useVideoToAscii";
 import { useAsciiMouseEffect } from "@/hooks/useAsciiMouseEffect";
 import { useAsciiRipple } from "@/hooks/useAsciiRipple";
 import { useAsciiAudio } from "@/hooks/useAsciiAudio";
 import { type VideoToAsciiProps } from "@/lib/webgl";
+import { detectMediaType } from "@/lib/media-utils";
 
 export type { VideoToAsciiProps };
 
 // Component Implementation
 export function Video2Ascii({
   src,
+  mediaType,
   numColumns,
   colored = true,
   blend = 0,
   highlight = 0,
   brightness = 1.0,
+  dither = "none",
   charset = "standard",
   enableMouse = true,
   trailLength = 24,
@@ -30,6 +33,12 @@ export function Video2Ascii({
   showStats = false,
   className = "",
 }: VideoToAsciiProps) {
+  // Auto-detect media type from src if not explicitly provided
+  const resolvedMediaType = useMemo(
+    () => mediaType || detectMediaType(src),
+    [src, mediaType]
+  );
+
   // Core hook handles WebGL setup and rendering
   const ascii = useVideoToAscii({
     numColumns,
@@ -37,12 +46,14 @@ export function Video2Ascii({
     blend,
     highlight,
     brightness,
+    dither,
     charset,
     enableSpacebarToggle,
+    mediaType: resolvedMediaType,
   });
 
   // Destructure to avoid linter issues with accessing refs
-  const { containerRef, videoRef, canvasRef, stats, dimensions, isReady } =
+  const { containerRef, videoRef, imageRef, canvasRef, stats, dimensions, isReady } =
     ascii;
 
   // Feature hooks - always call them (React rules), enable/disable via options
@@ -57,7 +68,7 @@ export function Video2Ascii({
   });
 
   useAsciiAudio(ascii, {
-    enabled: audioEffect > 0,
+    enabled: audioEffect > 0 && resolvedMediaType === "video",
     reactivity: audioEffect,
     sensitivity: audioRange,
   });
@@ -65,7 +76,7 @@ export function Video2Ascii({
   // Control video playback based on isPlaying prop
   useEffect(() => {
     const video = videoRef.current;
-    if (!video) return;
+    if (!video || resolvedMediaType !== "video") return;
 
     if (isPlaying) {
       if (autoPlay && isReady) {
@@ -76,20 +87,33 @@ export function Video2Ascii({
     } else {
       video.pause();
     }
-  }, [isPlaying, autoPlay, isReady, videoRef]);
+  }, [isPlaying, autoPlay, isReady, videoRef, resolvedMediaType]);
 
   return (
     <div className={`video-to-ascii ${className}`}>
       {/* Hidden video element - feeds frames to WebGL */}
-      <video
-        ref={videoRef}
-        src={src}
-        muted={audioEffect === 0}
-        loop
-        playsInline
-        crossOrigin="anonymous"
-        style={{ display: "none" }}
-      />
+      {resolvedMediaType === "video" && (
+        <video
+          ref={videoRef}
+          src={src}
+          muted={audioEffect === 0}
+          loop
+          playsInline
+          crossOrigin="anonymous"
+          style={{ display: "none" }}
+        />
+      )}
+
+      {/* Hidden image element - feeds frames to WebGL */}
+      {resolvedMediaType === "image" && (
+        <img
+          ref={imageRef}
+          src={src}
+          crossOrigin="anonymous"
+          style={{ display: "none" }}
+          alt="Source for ASCII conversion"
+        />
+      )}
 
       {/* Interactive container */}
       <div
