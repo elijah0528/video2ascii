@@ -236,7 +236,18 @@ export function useVideoToAscii(
     // Allocate storage for the video texture ONCE
     gl.bindTexture(gl.TEXTURE_2D, videoTextureRef.current);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, mediaWidth, mediaHeight, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    
+    // For videos: use mipmaps for better quality at different scales
+    // For images/GIFs: use simple linear filtering (no scaling, fixed resolution)
+    if (mediaType === "video") {
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+      needsMipmapUpdateRef.current = true;
+    } else {
+      // Images don't scale - mipmaps waste 33% VRAM with no quality benefit
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      needsMipmapUpdateRef.current = false;
+    }
+    
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
@@ -323,8 +334,8 @@ export function useVideoToAscii(
     // Use texSubImage2D for faster texture updates
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, mediaElement);
     
-    // Generate mipmaps only when needed (e.g., on first load or resize)
-    if (needsMipmapUpdateRef.current) {
+    // Generate mipmaps only for video (images don't use them)
+    if (mediaType === "video" && needsMipmapUpdateRef.current) {
       gl.generateMipmap(gl.TEXTURE_2D);
       needsMipmapUpdateRef.current = false;
     }
