@@ -128,6 +128,21 @@ import type { VideoToAsciiProps, DitherMode, CharsetKey, MediaType } from "video
 - **WebGL2**: Required (all modern browsers)
 - **Performance**: Lower `numColumns` for better FPS on large videos
 
+## Development
+
+To run the demo project locally for development:
+
+```bash
+# Install dependencies
+npm install
+
+# Start the demo in development mode
+npm run dev
+
+# Build and preview the demo
+npm run demo
+```
+
 ## License
 
 MIT
