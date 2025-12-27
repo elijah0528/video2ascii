@@ -1,7 +1,11 @@
 import type { CharsetKey } from "../ascii-charsets";
+import type { MediaType } from "../media-utils";
 
 // Constants
 export const CHAR_WIDTH_RATIO = 0.6;
+
+// Dither modes
+export type DitherMode = "none" | "bayer" | "random";
 
 // Core Types
 export interface AsciiStats {
@@ -34,6 +38,7 @@ export interface UniformLocations {
   u_blend: WebGLUniformLocation | null;
   u_highlight: WebGLUniformLocation | null;
   u_brightness: WebGLUniformLocation | null;
+  u_ditherMode: WebGLUniformLocation | null;
 
   // Mouse
   u_mouse: WebGLUniformLocation | null;
@@ -60,11 +65,13 @@ export interface UseVideoToAsciiOptions {
   blend?: number;
   highlight?: number;
   brightness?: number;
+  dither?: DitherMode;
   charset?: CharsetKey;
   maxWidth?: number;
   numColumns?: number;
   enableSpacebarToggle?: boolean;
   onStats?: (stats: AsciiStats) => void;
+  mediaType?: MediaType;
 }
 
 export interface UseAsciiMouseEffectOptions {
@@ -87,6 +94,7 @@ export interface UseAsciiAudioOptions {
 export interface AsciiContext {
   containerRef: React.RefObject<HTMLDivElement | null>;
   videoRef: React.RefObject<HTMLVideoElement | null>;
+  imageRef: React.RefObject<HTMLImageElement | null>;
   canvasRef: React.RefObject<HTMLCanvasElement | null>;
   glRef: React.RefObject<WebGL2RenderingContext | null>;
   programRef: React.RefObject<WebGLProgram | null>;
@@ -97,6 +105,7 @@ export interface AsciiContext {
   stats: AsciiStats;
   isReady: boolean;
   isPlaying: boolean;
+  mediaType: MediaType;
   play: () => void;
   pause: () => void;
   toggle: () => void;
@@ -115,6 +124,9 @@ export interface RippleHandlers {
 // Component Props - extends core options with feature-specific props
 export interface VideoToAsciiProps {
   src: string;
+  
+  // Media type override (auto-detected if not provided)
+  mediaType?: MediaType;
 
   // Size control
   numColumns?: number;
@@ -124,6 +136,7 @@ export interface VideoToAsciiProps {
   blend?: number;
   highlight?: number;
   brightness?: number;
+  dither?: DitherMode;
   charset?: CharsetKey;
 
   // Mouse effect

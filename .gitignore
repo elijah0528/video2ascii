@@ -1,1 +1,5 @@
 /dist
+/node_modules
+/demo/dist
+.DS_Store
+*.local
