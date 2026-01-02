@@ -370,7 +370,13 @@ export function useVideoToAscii(
     const resizeObserver = new ResizeObserver(() => {
       // Reinitialize WebGL when container size changes
       if (videoRef.current && videoRef.current.readyState >= 1) {
-        initWebGL();
+        const wasPlaying = !videoRef.current.paused;
+        if (initWebGL() && wasPlaying) {
+          // Immediately render a frame after resize to prevent black screen
+          requestAnimationFrame(() => {
+            render();
+          });
+        }
       }
     });
 
@@ -379,7 +385,7 @@ export function useVideoToAscii(
     return () => {
       resizeObserver.disconnect();
     };
-  }, [numColumns, initWebGL]);
+  }, [numColumns, initWebGL, render]);
 
   // Cleanup WebGL resources when unmounting
   useEffect(() => {
